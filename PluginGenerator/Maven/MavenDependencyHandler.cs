@@ -16,7 +16,6 @@ using System.Text.RegularExpressions;
 namespace SonarQube.Plugins.Maven
 {
     // TODO:
-    // * inherited dependencies
     // * parsing version ranges e.g. [1.0.0,)
     // * version conflict resolution
     // * checking for duplicates
@@ -33,7 +32,7 @@ namespace SonarQube.Plugins.Maven
         /// <summary>
         /// Maps coords to the corresponding POM
         /// </summary>
-        private Dictionary<MavenCoordinate, MavenPartialPOM> coordPomMap;
+        private readonly Dictionary<MavenCoordinate, MavenPartialPOM> coordPomMap;
 
         public MavenDependencyHandler(ILogger logger)
             : this(null, logger)
@@ -59,24 +58,252 @@ namespace SonarQube.Plugins.Maven
 
         #region IMavenDependencyHandler interface
 
-        public IEnumerable<string> GetJarFiles(MavenCoordinate coordinate, bool includeDependencies)
+        public IEnumerable<string> GetJarFilesOLD(MavenCoordinate coordinate, bool recurse)
         {
-            if (coordinate == null) { throw new ArgumentNullException("descriptor"); }
+            if (coordinate == null) { throw new ArgumentNullException("coordinate"); }
 
             this.logger.LogDebug(MavenResources.MSG_ProcessingDependency, coordinate);
 
             List<string> jarFiles = new List<string>();
             List<MavenCoordinate> visited = new List<MavenCoordinate>(); // guard against recursion
-            this.GetJarFiles(coordinate, includeDependencies, jarFiles, visited);
+            this.GetJarFilesOLD(coordinate, recurse, jarFiles, visited);
 
             return jarFiles;
+        }
+
+        public IEnumerable<string> GetJarFiles(MavenCoordinate coordinate, bool includeTransitive)
+        {
+            if (coordinate == null) { throw new ArgumentNullException("coordinate"); }
+
+            this.logger.LogDebug(MavenResources.MSG_ProcessingDependency, coordinate);
+
+            List<MavenCoordinate> visited = new List<MavenCoordinate>(); // guard against recursion
+            List<MavenDependency> currentDependencies = new List<MavenDependency>();
+            this.GetDependencies(coordinate, includeTransitive, currentDependencies, visited);
+
+            IEnumerable<string> files = GetJarsForDependencies(currentDependencies);
+
+            return files;
+        }
+
+        private IEnumerable<string> GetJarsForDependencies(IEnumerable<MavenDependency> dependencies)
+        {
+            List<string> files = new List<string>();
+
+            foreach (MavenDependency dependency in dependencies)
+            {
+                MavenPartialPOM pom = TryGetPOM(dependency);
+                if (pom != null)
+                {
+                    if (HasJar(pom))
+                    {
+                        string localJarFilePath = TryGetJar(dependency);
+
+                        if (localJarFilePath != null)
+                        {
+                            if (files.Contains(localJarFilePath, StringComparer.OrdinalIgnoreCase))
+                            {
+                                this.logger.LogWarning(MavenResources.WARN_JarAddedByAnotherDependency, dependency, localJarFilePath);
+                            }
+                            else
+                            {
+                                files.Add(localJarFilePath);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        this.logger.LogDebug(MavenResources.MSG_POMDoesNotContainAJar, pom, pom.Packaging);
+                    }
+                }
+            }
+            return files;
         }
 
         #endregion
 
         #region Private methods
 
-        private void GetJarFiles(MavenCoordinate coordinate, bool includeDependencies, List<string> files, List<MavenCoordinate> visited)
+        private void GetDependencies(MavenCoordinate resolvedCoordinate, bool includeTransitive, IList<MavenDependency> currentDependencies, List<MavenCoordinate> visited)
+        {
+            if (visited.Contains(resolvedCoordinate))
+            {
+                this.logger.LogDebug(MavenResources.MSG_DependencyAlreadyVisited, resolvedCoordinate);
+                return;
+            }
+            visited.Add(resolvedCoordinate);
+
+            Debug.Assert(!string.IsNullOrWhiteSpace(resolvedCoordinate.Version));
+
+            MavenPartialPOM pom = this.TryGetPOM(resolvedCoordinate);
+            if (pom == null)
+            {
+                return;
+            }
+
+            IEnumerable<MavenDependency> resolvedDependencies = GetResolvedProjectDependencies(pom);
+            IEnumerable<MavenDependency> filtered = FilterDependenciesByScope(resolvedDependencies);
+
+            MergeDependenciesUsingLatestVersion(filtered, currentDependencies);
+
+            if (includeTransitive)
+            {
+                foreach (MavenDependency dependency in pom.Dependencies)
+                {
+                    MavenCoordinate resolved = GetResolvedCoordinate(dependency, pom);
+                    if (resolved != null)
+                    {
+                        GetDependencies(resolved, true, currentDependencies, visited);
+                    }
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Returns all direct dependencies for the specified project that can be resolved, including
+        /// inherited dependencies
+        /// </summary>
+        private IEnumerable<MavenDependency> GetResolvedProjectDependencies(MavenPartialPOM pom)
+        {
+            List<MavenDependency> allDependencies = new List<MavenDependency>();
+            MavenPartialPOM current = pom;
+
+            while (current != null)
+            {
+                this.logger.LogDebug(MavenResources.MSG_AddingDependenciesForPOM, pom);
+
+                IEnumerable<MavenDependency> resolvedDependencies = GetResolvedDirectDependencies(current);
+
+                AddInheritedDependencies(resolvedDependencies, allDependencies);
+
+                if (current.Parent == null)
+                {
+                    current = null;
+                }
+                else
+                {
+                    MavenCoordinate resolvedCoordinate = GetResolvedCoordinate(current.Parent, pom);
+                    if (resolvedCoordinate != null)
+                    {
+                        current = this.TryGetPOM(resolvedCoordinate);
+                    }
+                    else
+                    {
+                        current = null;
+                    }
+                }
+            }
+
+            return allDependencies;
+        }
+
+        private IEnumerable<MavenDependency> GetResolvedDirectDependencies(MavenPartialPOM pom)
+        {
+            List<MavenDependency> resolvedDependencies = new List<MavenDependency>();
+
+            foreach (MavenDependency unresolved in pom.Dependencies)
+            {
+                MavenCoordinate resolved = GetResolvedCoordinate(unresolved, pom);
+                if (resolved != null)
+                {
+                    // TODO: find a neater way of updating the identity data
+                    unresolved.ArtifactId = resolved.ArtifactId;
+                    unresolved.GroupId = resolved.GroupId;
+                    unresolved.Version = resolved.Version;
+
+                    resolvedDependencies.Add(unresolved);
+                }
+            }
+            return resolvedDependencies;
+        }
+
+        private MavenCoordinate GetResolvedCoordinate(MavenCoordinate coordinate, MavenPartialPOM pom)
+        {
+            MavenDependency resolvedDependency = null;
+
+            string resolvedGroupId = ExpandVariables(coordinate.GroupId, pom);
+            string resolvedArtifactId = ExpandVariables(coordinate.ArtifactId, pom);
+            string resolvedVersion = this.ResolveCoordinateVersion(resolvedGroupId, resolvedArtifactId, coordinate.Version, pom);
+
+            if (resolvedVersion == null)
+            {
+                logger.LogWarning(MavenResources.WARN_FailedToResolveDependency, coordinate);
+            }
+            else
+            {
+                resolvedDependency = new MavenDependency(resolvedGroupId, resolvedArtifactId, resolvedVersion);
+            }
+            return resolvedDependency;
+        }
+
+        private IEnumerable<MavenDependency> FilterDependenciesByScope(IEnumerable<MavenDependency> dependencies)
+        {
+            List<MavenDependency> filtered = new List<MavenDependency>();
+
+            foreach(MavenDependency dependency in dependencies)
+            {
+                if (ShouldIncludeDependency(dependency))
+                {
+                    filtered.Add(dependency);
+                }
+                else
+                {
+                    this.logger.LogDebug(MavenResources.MSG_SkippingScopedDependency, dependency, dependency.Scope);
+                }
+            }
+            return filtered;
+        }
+
+        /// <summary>
+        /// Merges the new dependencies into the current list.
+        /// Conflict resolution: if an artifact exists in both lists the latest version is used
+        /// </summary>
+        private void MergeDependenciesUsingLatestVersion(IEnumerable<MavenDependency> newDependencies, IList<MavenDependency> currentDependencies)
+        {
+            foreach(MavenDependency newDependency in newDependencies)
+            {
+                MavenDependency existing = GetMatchingArtifact(currentDependencies, newDependency);
+                if (existing == null)
+                {
+                    currentDependencies.Add(newDependency); // no conflict
+                }
+                else
+                {
+                    UseLatestDependency(currentDependencies, newDependency, existing);
+                }
+            }
+        }
+
+        private void UseLatestDependency(IList<MavenDependency> currentDependencies, MavenDependency newDependency, MavenDependency existingDependency)
+        {
+            Debug.Assert(!string.IsNullOrWhiteSpace(newDependency.Version));
+            Debug.Assert(!string.IsNullOrWhiteSpace(existingDependency.Version));
+
+            MavenDependency selected;
+
+            if (newDependency.Equals(existingDependency))
+            {
+                this.logger.LogDebug("TODO: dependency already included");
+            }
+            else
+            {
+                //TODO: proper version comparison
+                if (existingDependency.Version.CompareTo(newDependency.Version) > 0)
+                {
+                    selected = existingDependency;
+                }
+                else
+                {
+                    currentDependencies.Remove(existingDependency);
+                    currentDependencies.Add(newDependency);
+                    selected = newDependency;
+                }
+                this.logger.LogDebug("Resolving version conflict. Options: {0}, {1}. Selected: {2}",
+                    newDependency, existingDependency, selected);
+            }
+        }
+
+        private void GetJarFilesOLD(MavenCoordinate coordinate, bool includeDependencies, List<string> files, List<MavenCoordinate> visited)
         {
             if (visited.Contains(coordinate))
             {
@@ -93,7 +320,7 @@ namespace SonarQube.Plugins.Maven
                 return; // failed to retrieve the POM for the artifact
             }
 
-            if (pom.Packaging == "jar" || pom.Packaging == null)
+            if (HasJar(pom))
             {
                 string localJarFilePath = TryGetJar(coordinate);
 
@@ -120,13 +347,18 @@ namespace SonarQube.Plugins.Maven
             }
         }
 
+        private static bool HasJar(MavenPartialPOM pom)
+        {
+            return (pom.Packaging == "jar" || pom.Packaging == null || pom.Packaging == "bundle");
+        }
+
         private void FetchDependencies(List<string> files, List<MavenCoordinate> visited, MavenPartialPOM pom)
         {
-            foreach (MavenDependency dependency in this.GetAllDependencies(pom))
+            foreach (MavenDependency dependency in this.GetCurrentProjectDependencies(pom))
             {
                 if (ShouldIncludeDependency(dependency))
                 {
-                    string resolvedVersion = this.ResolveDependencyVersion(dependency, pom);
+                    string resolvedVersion = this.ResolveCoordinateVersionOLD(dependency, pom);
 
                     if (resolvedVersion == null)
                     {
@@ -135,7 +367,7 @@ namespace SonarQube.Plugins.Maven
                     else
                     {
                         MavenDependency resolvedDependency = new MavenDependency(dependency.GroupId, dependency.ArtifactId, resolvedVersion);
-                        this.GetJarFiles(resolvedDependency, true, files, visited);
+                        this.GetJarFilesOLD(resolvedDependency, true, files, visited);
                     }
                 }
                 else
@@ -209,20 +441,20 @@ namespace SonarQube.Plugins.Maven
             return localJarFilePath;
         }
 
-        private MavenPartialPOM TryGetPOM(MavenCoordinate coordinate)
+        private MavenPartialPOM TryGetPOM(MavenCoordinate resolvedCoordinate)
         {
-            Debug.Assert(coordinate != null, "Expecting a valid coordinate");
-            Debug.Assert(!string.IsNullOrWhiteSpace(coordinate.Version));
+            Debug.Assert(resolvedCoordinate != null, "Expecting a valid coordinate");
+            Debug.Assert(!string.IsNullOrWhiteSpace(resolvedCoordinate.Version));
 
             MavenPartialPOM pom;
 
             // See if we have already loaded this pom
-            if (this.coordPomMap.TryGetValue(coordinate, out pom))
+            if (this.coordPomMap.TryGetValue(resolvedCoordinate, out pom))
             {
                 return pom;
             }
 
-            string localPOMFilePath = this.GetFilePath(coordinate, POM_Extension);
+            string localPOMFilePath = this.GetFilePath(resolvedCoordinate, POM_Extension);
 
             if (File.Exists(localPOMFilePath))
             {
@@ -231,10 +463,10 @@ namespace SonarQube.Plugins.Maven
             }
             else
             {
-                pom = DownloadPOM(coordinate);
+                pom = DownloadPOM(resolvedCoordinate);
             }
 
-            this.coordPomMap[coordinate] = pom; // cache the result to avoid further lookups
+            this.coordPomMap[resolvedCoordinate] = pom; // cache the result to avoid further lookups
             return pom;
         }
 
@@ -253,16 +485,16 @@ namespace SonarQube.Plugins.Maven
         }
 
         /// <summary>
-        /// Returns all of dependencies for the specified co-ordinate, including
+        /// Returns all direct dependencies for the specified project, including
         /// inherited dependencies
         /// </summary>
-        private IEnumerable<MavenDependency> GetAllDependencies(MavenPartialPOM pom)
+        private IEnumerable<MavenDependency> GetCurrentProjectDependencies(MavenPartialPOM pom)
         {
             List<MavenDependency> allDependencies = new List<MavenDependency>();
             while(pom != null)
             {
                 this.logger.LogDebug(MavenResources.MSG_AddingDependenciesForPOM, pom);
-                AddDependencies(pom.Dependencies, allDependencies);
+                AddInheritedDependencies(pom.Dependencies, allDependencies);
 
                 if (pom.Parent != null)
                 {
@@ -277,18 +509,23 @@ namespace SonarQube.Plugins.Maven
             return allDependencies;
         }
 
-        private void AddDependencies(IEnumerable<MavenDependency> source, List<MavenDependency> target)
+        /// <summary>
+        /// Adds inherited dependencies to the list of current dependencies.
+        /// Conflict resolution: an inherited dependency will be ignored if there is
+        /// already a current dependency for the specified artifact, regardless of artifact version.
+        /// </summary>
+        private void AddInheritedDependencies(IEnumerable<MavenDependency> inherited, List<MavenDependency> current)
         {
-            foreach(MavenDependency sourceItem in source)
+            foreach(MavenDependency sourceItem in inherited)
             {
                 // Ignore inherited artifacts that are already in the list
-                if (ContainsArtifact(target, sourceItem))
+                if (ContainsArtifact(current, sourceItem))
                 {
                     this.logger.LogDebug(MavenResources.MSG_SkippingInheritedDependency, sourceItem);
                 }
                 else
                 {
-                    target.Add(sourceItem);
+                    current.Add(sourceItem);
                 }
             }
         }
@@ -297,6 +534,13 @@ namespace SonarQube.Plugins.Maven
         {
             return coords.Any(c => MavenCoordinate.IsSameArtifact(item, c));
         }
+
+        private static MavenDependency GetMatchingArtifact(IEnumerable<MavenDependency> coords, MavenDependency item)
+        {
+            // Should be zero or one
+            return coords.SingleOrDefault(c => MavenCoordinate.IsSameArtifact(item, c));
+        }
+
 
         private static bool ShouldIncludeDependency(MavenDependency dependency)
         {
@@ -307,13 +551,45 @@ namespace SonarQube.Plugins.Maven
             return include;
         }
 
-        private string ResolveDependencyVersion(MavenDependency dependency, MavenPartialPOM currentPom)
+        private string ResolveCoordinateVersion(string resolvedGroupId, string resolvedArtifactId, string rawVersion, MavenPartialPOM currentPom)
         {
-            string effectiveVersion = ExpandVariables(dependency.Version, currentPom);
+            string effectiveVersion = ExpandVariables(rawVersion, currentPom);
 
-            if (dependency.Version == null)
+            if (effectiveVersion == null)
             {
-                effectiveVersion = this.TryGetVersionFromDependencyManagement(dependency, currentPom);
+                effectiveVersion = this.TryGetVersionFromDependencyManagement(resolvedGroupId, resolvedArtifactId, currentPom);
+            }
+
+            if (effectiveVersion == null && currentPom.Parent != null)
+            {
+                MavenCoordinate resolvedParent = GetResolvedCoordinate(currentPom.Parent, currentPom);
+
+                if (resolvedParent != null)
+                {
+                    this.logger.LogDebug(MavenResources.MSG_AttemptingToResolveFromParentPOM, currentPom.Parent);
+                    MavenPartialPOM parentPOM = this.TryGetPOM(resolvedParent);
+                    if (parentPOM != null)
+                    {
+                        effectiveVersion = ResolveCoordinateVersion(resolvedGroupId, resolvedArtifactId, rawVersion, parentPOM);
+
+                        if (effectiveVersion != null)
+                        {
+                            logger.LogDebug(MavenResources.MSG_ResolvedVersionInPom, parentPOM);
+                        }
+                    }
+                }
+            }
+
+            return effectiveVersion;
+        }
+
+        private string ResolveCoordinateVersionOLD(MavenCoordinate coordinate, MavenPartialPOM currentPom)
+        {
+            string effectiveVersion = ExpandVariables(coordinate.Version, currentPom);
+
+            if (coordinate.Version == null)
+            {
+                effectiveVersion = this.TryGetVersionFromDependencyManagementOLD(coordinate, currentPom);
             }
 
             if (effectiveVersion == null && currentPom.Parent != null)
@@ -322,7 +598,7 @@ namespace SonarQube.Plugins.Maven
                 MavenPartialPOM parentPOM = this.TryGetPOM(currentPom.Parent);
                 if (parentPOM != null)
                 {
-                    effectiveVersion = ResolveDependencyVersion(dependency, parentPOM);
+                    effectiveVersion = ResolveCoordinateVersionOLD(coordinate, parentPOM);
 
                     if (effectiveVersion != null)
                     {
@@ -355,6 +631,30 @@ namespace SonarQube.Plugins.Maven
                 {
                     this.logger.LogDebug(MavenResources.MSG_ExpandedProjectVariable, rawValue);
                     expandedValue = pom.Version;
+                    if (expandedValue == null && pom.Parent != null)
+                    {
+                        expandedValue = pom.Parent.Version;
+                    }
+                }
+                else if (string.Equals("project.groupId", variable, MavenPartialPOM.PomComparisonType) ||
+                    // Support the obsolete variable formats
+                    string.Equals("pom.groupId", variable, MavenPartialPOM.PomComparisonType) ||
+                    string.Equals("groupId", variable, MavenPartialPOM.PomComparisonType))
+                {
+                    this.logger.LogDebug(MavenResources.MSG_ExpandedProjectVariable, rawValue);
+                    expandedValue = pom.GroupId;
+                    if (expandedValue == null && pom.Parent != null)
+                    {
+                        expandedValue = pom.Parent.GroupId;
+                    }
+                }
+                else if (string.Equals("project.artifactId", variable, MavenPartialPOM.PomComparisonType) ||
+                    // Support the obsolete variable formats
+                    string.Equals("pom.artifactId", variable, MavenPartialPOM.PomComparisonType) ||
+                    string.Equals("artifactId", variable, MavenPartialPOM.PomComparisonType))
+                {
+                    this.logger.LogDebug(MavenResources.MSG_ExpandedProjectVariable, rawValue);
+                    expandedValue = pom.ArtifactId;
                 }
                 else if (pom.Properties != null && pom.Properties.ContainsKey(variable))
                 {
@@ -371,16 +671,36 @@ namespace SonarQube.Plugins.Maven
             return expandedValue;
         }
 
-        private string TryGetVersionFromDependencyManagement(MavenDependency dependency, MavenPartialPOM pom)
+        private string TryGetVersionFromDependencyManagement(string resolvedGroupId, string resolvedArtifactId, MavenPartialPOM pom)
         {
-            Debug.Assert(dependency.Version == null);
+            string effectiveVersion = null;
+            if (pom.DependencyManagement != null && pom.DependencyManagement.Dependencies != null)
+            {
+                MavenDependency match = pom.DependencyManagement.Dependencies.FirstOrDefault(d =>
+                    string.Equals(resolvedGroupId, d.GroupId, MavenPartialPOM.PomComparisonType) &&
+                    string.Equals(resolvedArtifactId, d.ArtifactId, MavenPartialPOM.PomComparisonType)
+                );
+
+                if (match != null)
+                {
+                    effectiveVersion = ExpandVariables(match.Version, pom);
+                    this.logger.LogDebug(MavenResources.MSG_ResolvedVersionFromDependencyManagement, effectiveVersion);
+                }
+            }
+            return effectiveVersion;
+        }
+
+
+        private string TryGetVersionFromDependencyManagementOLD(MavenCoordinate coordinate, MavenPartialPOM pom)
+        {
+            Debug.Assert(coordinate.Version == null);
 
             string effectiveVersion = null;
             if (pom.DependencyManagement != null && pom.DependencyManagement.Dependencies != null)
             {
                 MavenDependency match = pom.DependencyManagement.Dependencies.FirstOrDefault(d =>
-                    string.Equals(dependency.GroupId, d.GroupId, MavenPartialPOM.PomComparisonType) &&
-                    string.Equals(dependency.ArtifactId, d.ArtifactId, MavenPartialPOM.PomComparisonType)
+                    string.Equals(coordinate.GroupId, d.GroupId, MavenPartialPOM.PomComparisonType) &&
+                    string.Equals(coordinate.ArtifactId, d.ArtifactId, MavenPartialPOM.PomComparisonType)
                 );
 
                 if (match != null)

@@ -65,12 +65,12 @@ namespace SonarQube.Plugins.IntegrationTests
                 ArtifactId = "sonar-plugin-api",
                 Version = "4.5.2"
             };
-            coordinate = new MavenCoordinate()
-            {
-                GroupId = "com.google.guava",
-                ArtifactId = "guava",
-                Version = "10.0.1"
-            };
+            //coordinate = new MavenCoordinate()
+            //{
+            //    GroupId = "com.google.guava",
+            //    ArtifactId = "guava",
+            //    Version = "10.0.1"
+            //};
 
             TestLogger logger = new TestLogger();
             MavenDependencyHandler subject = new MavenDependencyHandler(localMavenDir, logger);

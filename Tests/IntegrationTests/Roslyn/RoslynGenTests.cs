@@ -7,6 +7,8 @@
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SonarQube.Common;
+using SonarQube.Plugins.Common;
+using SonarQube.Plugins.Maven;
 using SonarQube.Plugins.Test.Common;
 using System;
 using System.Collections.Generic;
@@ -22,45 +24,48 @@ namespace SonarQube.Plugins.IntegrationTests
     {
         public TestContext TestContext { get; set; }
 
-        [TestMethod] [Ignore] // WIP
+        [TestMethod]
+        //[Ignore] // WIP
         public void RoslynGen()
         {
-            JdkWrapper jdkWrapper = new JdkWrapper();
-            
-            if (!jdkWrapper.IsJdkInstalled())
-            {
-                Assert.Inconclusive("Test requires the JDK to be installed");
-            }
-
             TestLogger logger = new TestLogger();
+
+            string tempDir = TestUtils.CreateTestDirectory(this.TestContext, "pluginInsp");
+            PluginInspector inspector = new PluginInspector();
+            string jarFilePath = @"C:\Users\duncanp\Source\Repos\sonarqube-roslyn-sdk\RoslynPluginGenerator\bin\Debug\Wintellect.Analyzers-plugin.1.0.5.jar"; // TODO
+            object description = inspector.GetPluginDescription(jarFilePath, tempDir, logger);
+
+            Assert.IsNotNull(description);
 
             // Build the Java inspector class
             string testDir = TestUtils.CreateTestDirectory(this.TestContext);
-            string srcDir = TestUtils.CreateTestDirectory(this.TestContext, "src");
-            SourceGenerator.CreateSourceFiles(this.GetType().Assembly,
-                "SonarQube.Plugins.IntegrationTests.Roslyn.Resources",
-                srcDir,
-                new Dictionary<string, string>());
 
-            // TODO: add required jar files
 
-            string[] srcFiles = Directory.GetFiles(srcDir, "*.java", SearchOption.AllDirectories);
-            bool result = jdkWrapper.CompileSources(srcFiles, logger);
-            if (result)
-            {
-                Assert.Inconclusive("Test setup error: failed to build the Java inspector");
-            }
-            
-            // Build the exe
+            bool result = RunRoslynPluginGenerator(logger, "/a:Wintellect.Analyzer:1.0.4");
+            Assert.IsTrue(result, "Roslyn generator exe did not complete successfully");
+
+            jarFilePath = AssertPluginJarExists(testDir);
+
+        }
+
+        private static bool RunRoslynPluginGenerator(ILogger logger, params string[] args)
+        {
             string exePath = typeof(Roslyn.AnalyzerPluginGenerator).Assembly.Location;
             ProcessRunner runner = new ProcessRunner();
 
-            ProcessRunnerArguments args = new ProcessRunnerArguments(exePath, logger);
+            ProcessRunnerArguments prArgs = new ProcessRunnerArguments(exePath, logger);
 
-            args.CmdLineArgs = new string[] { "/a:Wintellect.Analyzers:1.0.5" };
-            args.WorkingDirectory = Path.GetDirectoryName(exePath);
+            prArgs.CmdLineArgs = args;
+            prArgs.WorkingDirectory = Path.GetDirectoryName(exePath);
 
-            result = runner.Execute(args);
+            bool result = runner.Execute(prArgs);
+            return result;
+        }
+
+        private static string AssertPluginJarExists(string rootDir)
+        {
+            // TODO
+            return null;
         }
     }
 }
