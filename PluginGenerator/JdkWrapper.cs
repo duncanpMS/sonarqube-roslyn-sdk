@@ -85,7 +85,8 @@ namespace SonarQube.Plugins
 
             ProcessRunnerArguments runnerArgs = new ProcessRunnerArguments(exePath, logger)
             {
-                CmdLineArgs = args
+                CmdLineArgs = args,
+                WorkingDirectory = Directory.GetCurrentDirectory()
             };
 
             ProcessRunner runner = new ProcessRunner();

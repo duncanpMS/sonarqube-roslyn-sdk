@@ -21,6 +21,8 @@ namespace SonarQube.Plugins
 
         private readonly IList<string> classPaths;
         private readonly IList<string> sources;
+        private string sourceVersion;
+        private string targetVersion;
 
         public JavaCompilationBuilder(IJdkWrapper jdkWrapper)
         {
@@ -54,7 +56,27 @@ namespace SonarQube.Plugins
 
             return this;
         }
-        
+
+        public JavaCompilationBuilder SetSourceVersion(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                throw new ArgumentNullException("version");
+            }
+            this.sourceVersion = version;
+            return this;
+        }
+
+        public JavaCompilationBuilder SetTargetVersion(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                throw new ArgumentNullException("version");
+            }
+            this.targetVersion = version;
+            return this;
+        }
+
         public bool Compile(string sourcesDirectory, string outputDirectory, ILogger logger)
         {
             if (string.IsNullOrWhiteSpace(sourcesDirectory))
@@ -72,6 +94,7 @@ namespace SonarQube.Plugins
                 Directory.CreateDirectory(outputDirectory);
             }
 
+
             IList<string> args = new List<string>();
 
             StringBuilder sb = new StringBuilder();
@@ -81,8 +104,8 @@ namespace SonarQube.Plugins
                 sb.Append(GetQuotedArg(classPath));
                 sb.Append(";");
             }
-            args.Add(sb.ToString());
-            
+            args.Add(sb.ToString().TrimEnd(';'));
+
             args.Add(string.Format(CultureInfo.InvariantCulture, " -d {0}", GetQuotedArg(outputDirectory)));
 
             args.Add(string.Format(CultureInfo.InvariantCulture, " -s {0}", GetQuotedArg(sourcesDirectory)));
@@ -92,11 +115,19 @@ namespace SonarQube.Plugins
                 args.Add(string.Format(CultureInfo.InvariantCulture, " {0}", GetQuotedArg(source)));
             }
 
+            if (!string.IsNullOrWhiteSpace(this.targetVersion))
+            {
+                args.Add(string.Format(CultureInfo.InvariantCulture, " -source {0}", GetQuotedArg(this.sourceVersion)));
+            }
+            if (!string.IsNullOrWhiteSpace(this.targetVersion))
+            {
+                args.Add(string.Format(CultureInfo.InvariantCulture, " -target {0}", GetQuotedArg(this.targetVersion)));
+            }
+
             bool success = this.jdkWrapper.CompileSources(args, logger);
 
             return success;
         }
-
 
         private static string GetQuotedArg(string argument)
         {

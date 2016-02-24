@@ -22,6 +22,8 @@ namespace SonarQube.Plugins
     {
         public const string SONARQUBE_API_VERSION = "4.5.2";
 
+        public const string TargetJavaVersion = "1.7";
+
         /// <summary>
         /// The name of the package in which the plugin will be created
         /// </summary>
@@ -408,6 +410,9 @@ namespace SonarQube.Plugins
             {
                 compiler.AddSources(sourceFile);
             }
+
+            compiler.SetSourceVersion(TargetJavaVersion);
+            compiler.SetTargetVersion(TargetJavaVersion);
 
             bool success = compiler.Compile(workingDirectory, workingDirectory, this.logger);
 
