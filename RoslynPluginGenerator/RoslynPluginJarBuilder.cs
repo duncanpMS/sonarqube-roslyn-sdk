@@ -1,4 +1,10 @@
-﻿using SonarQube.Plugins.Common;
+﻿//-----------------------------------------------------------------------
+// <copyright file="RoslynPluginJarBuilder.cs" company="SonarSource SA and Microsoft Corporation">
+//   Copyright (c) SonarSource SA and Microsoft Corporation.  All rights reserved.
+//   Licensed under the MIT License. See License.txt in the project root for license information.
+// </copyright>
+//-----------------------------------------------------------------------
+using SonarQube.Plugins.Common;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -11,8 +17,14 @@ namespace SonarQube.Plugins.Roslyn
     {
         private const string EmptyTemplateJarResourceName = "SonarQube.Plugins.Roslyn.Resources.sonar-roslyn-sdk-template-plugin-1.0-empty.jar";
 
-        public const string ManifestFileName = "MANIFEST.MF";
-        public const string RelativeManifestResourcePath = "META-INF\\" + ManifestFileName;
+        private const string RelativeManifestResourcePath = "META-INF\\MANIFEST.MF";
+        private const string RelativeConfigurationResourcePath = "org\\sonar\\plugins\\roslynsdk\\configuration.xml";
+
+        private const string RelativeRulesXmlResourcePath = "org\\sonar\\plugins\\roslynsdk\\rules.xml";
+        private const string RelativeSqaleXmlResourcePath = "org\\sonar\\plugins\\roslynsdk\\sqale.xml";
+
+        private const string PluginClassName = "org.sonar.plugins.roslynsdk.RoslynSdkGeneratedPlugin";
+
 
 
         private readonly ILogger logger;
@@ -46,7 +58,10 @@ namespace SonarQube.Plugins.Roslyn
             // Create the config and manifest files
             string configFilePath = BuildConfigFile(definition, workingDirectory);
 
-            string manifestFilePath = Path.Combine(workingDirectory, ManifestFileName);
+            string manifestFilePath = Path.Combine(workingDirectory, "manifest.txt");
+
+            //TODO: decide where to set this
+            definition.Manifest.Class = PluginClassName;
             definition.Manifest.Save(manifestFilePath);
 
             // Update the jar
@@ -56,13 +71,13 @@ namespace SonarQube.Plugins.Roslyn
             updater.SetInputArchive(templateJarFilePath)
                 .SetOutputArchive(outputFilePath)
                 .AddFile(manifestFilePath, RelativeManifestResourcePath)
-                .AddFile(configFilePath, "config.xml")
-                .AddFile(definition.RulesFilePath, "rules.xml")
-                .AddFile(definition.StaticResourceName, definition.SourceZipFilePath);
+                .AddFile(configFilePath, RelativeConfigurationResourcePath)
+                .AddFile(definition.RulesFilePath, RelativeRulesXmlResourcePath)
+                .AddFile(definition.SourceZipFilePath, definition.StaticResourceName);
 
             if (!string.IsNullOrWhiteSpace(definition.SqaleFilePath))
             {
-                updater.AddFile(definition.SqaleFilePath, "sqale.xml");
+                updater.AddFile(definition.SqaleFilePath, RelativeSqaleXmlResourcePath);
             }
 
             updater.UpdateArchive();
@@ -95,6 +110,14 @@ namespace SonarQube.Plugins.Roslyn
             RoslynSdkConfiguration config = new RoslynSdkConfiguration();
 
             // TODO:
+            config.RepositoryKey = "TODO";
+            config.RepositoryName = "TODO";
+            config.RepositoryLanguage = definition.Language;
+            config.RulesXmlResourcePath = RelativeRulesXmlResourcePath;
+            config.SqaleXmlResourcePath = RelativeSqaleXmlResourcePath;
+
+            // TODO: add properties
+
             config.Save(configFilePath);
             return configFilePath;
         }

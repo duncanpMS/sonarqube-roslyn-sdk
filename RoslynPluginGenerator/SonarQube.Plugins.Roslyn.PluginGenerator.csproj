@@ -181,7 +181,7 @@
     <EmbeddedResource Include="Resources\RoslynProperties.java" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="Resources\sonar-roslyn-sdk-template-plugin-1.0-empty.jar" />
+    <EmbeddedResource Include="Resources\sonar-roslyn-sdk-template-plugin-1.0-empty.jar" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
