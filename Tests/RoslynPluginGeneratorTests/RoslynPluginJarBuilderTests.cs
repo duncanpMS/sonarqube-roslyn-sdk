@@ -30,25 +30,26 @@ namespace SonarQube.Plugins.Roslyn.RoslynPluginGeneratorTests
             string dummySqaleFile = TestUtils.CreateTextFile("sqale.txt", testDir, "<sqale />");
             string dummyZipFile = TestUtils.CreateTextFile("payload.txt", testDir, "zip");
 
-            RoslynPluginDefinition defn = new RoslynPluginDefinition();
-            defn.Manifest = new PluginManifest()
+            PluginManifest manifest= new PluginManifest()
             {
+                Key = "pluginkey",
                 Description = "description",
                 Name = "name"
             };
 
-            defn.PackageId = "package.id";
-            defn.PackageVersion = "1.0.0";
-            defn.Language = "cs";
-            defn.RulesFilePath = dummyRulesFile;
-            defn.SqaleFilePath = dummySqaleFile;
-            defn.StaticResourceName = "static\\foo.zip";
-            defn.SourceZipFilePath = dummyZipFile;
-
+            // Act
             RoslynPluginJarBuilder builder = new RoslynPluginJarBuilder(new TestLogger());
 
-            // Act
-            builder.BuildJar(defn, workingDir, outputJarFilePath);
+            builder.SetLanguage("cs")
+                .SetRepositoryKey("repo.key")
+                .SetRepositoryName("repo.name")
+                .SetRulesFilePath(dummyRulesFile)
+                .SetSqaleFilePath(dummySqaleFile)
+                .SetManifestProperties(manifest)
+                .AddResourceFile(dummyZipFile, "static\\foo.zip")
+                .SetJarFilePath(outputJarFilePath);
+            
+            builder.BuildJar(workingDir);
 
             // Assert
             ZipFileChecker checker = new ZipFileChecker(this.TestContext, outputJarFilePath);

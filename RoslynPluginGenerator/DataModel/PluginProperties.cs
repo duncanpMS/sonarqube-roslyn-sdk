@@ -5,6 +5,7 @@
 // </copyright>
 //-----------------------------------------------------------------------
 
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Xml;
 using System.Xml.Schema;
@@ -16,7 +17,7 @@ namespace SonarQube.Plugins.Roslyn
     /// Describes a collection of Maven POM properties
     /// </summary>
     /// <remarks>This class is XML-serializable</remarks>
-    public class PluginProperties : StringDictionary, IXmlSerializable
+    public class PluginProperties : Dictionary<string, string>, IXmlSerializable
     {
         #region IXmlSerializable methods
 
